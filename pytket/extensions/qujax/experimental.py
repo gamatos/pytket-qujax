@@ -1,14 +1,20 @@
-from typing import Tuple, Sequence, Optional, List, Union, Callable, Any
+from typing import Tuple, Sequence, Optional, List, Union, Callable, Any, Literal
 
 from jax import numpy as jnp
 
 import qujax  # type: ignore
-from pytket import  Circuit  # type: ignore
+from pytket import Circuit  # type: ignore
 
-from pytket.extensions.qujax.qujax_convert import _tk_qubits_to_inds, _symbolic_command_to_gate_and_param_inds
+from pytket.extensions.qujax.qujax_convert import (
+    _tk_qubits_to_inds,
+    _symbolic_command_to_gate_and_param_inds,
+)
+
 
 def tk_to_qujax_args(
-    circuit: Circuit, symbol_map: Optional[dict] = None
+    circuit: Circuit,
+    symbol_map: Optional[dict] = None,
+    simulator: Literal["statetensor"] | Literal["densitytensor"] = "statetensor",
 ) -> Tuple[
     Sequence[Union[str, Callable[[jnp.ndarray], jnp.ndarray]]],
     Sequence[Sequence[int]],
@@ -16,7 +22,7 @@ def tk_to_qujax_args(
     int,
     int,
     Sequence[float],
-    int
+    int,
 ]:
     """
     Converts a pytket circuit into a tuple of arguments representing
@@ -74,15 +80,23 @@ def tk_to_qujax_args(
             continue
         elif op_name == "Measure":
             metaparams_seq = (c.qubits[0].index[0], c.bits[0].index[0])
-            param_inds = {"measurement_prng_keys" : rng_param_index}
-            rng_param_index += 1
+            if simulator == "statetensor":
+                param_inds = {"measurement_prng_keys": rng_param_index}
+                rng_param_index += 1
+            else:
+                param_inds = {}
         elif op_name == "Reset":
             metaparams_seq = (c.qubits[0].index[0],)
-            param_inds = {"measurement_prng_keys" : rng_param_index}
-            rng_param_index += 1
+            if simulator == "statetensor":
+                param_inds = {"measurement_prng_keys": rng_param_index}
+                rng_param_index += 1
+            else:
+                param_inds = {}
         else:
             if symbol_map:
-                op_name, param_inds = _symbolic_command_to_gate_and_param_inds(c, symbol_map)
+                op_name, param_inds = _symbolic_command_to_gate_and_param_inds(
+                    c, symbol_map
+                )
             else:
                 if op_name not in qujax.experimental.statetensor.get_default_gates():
                     raise TypeError(
@@ -97,7 +111,9 @@ def tk_to_qujax_args(
             params += c.op.params
 
             metaparams_seq = _tk_qubits_to_inds(c.qubits)
-            param_inds = {"gate_parameters": tuple(range(param_index, param_index + n_params))}
+            param_inds = {
+                "gate_parameters": tuple(range(param_index, param_index + n_params))
+            }
             if n_params == 0:
                 param_inds = ()
             param_index += n_params
@@ -106,4 +122,12 @@ def tk_to_qujax_args(
         op_metaparams_seq.append(metaparams_seq)
         param_inds_seq.append(param_inds)
 
-    return op_seq, op_metaparams_seq, param_inds_seq, circuit.n_qubits, circuit.n_bits, params, rng_param_index
+    return (
+        op_seq,
+        op_metaparams_seq,
+        param_inds_seq,
+        circuit.n_qubits,
+        circuit.n_bits,
+        params,
+        rng_param_index,
+    )

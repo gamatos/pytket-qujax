@@ -6,6 +6,7 @@ from pytket.circuit import Circuit
 
 from pytket.extensions.qujax.experimental import tk_to_qujax_args
 
+
 def test_measure_and_reset() -> None:
 
     n_qubits = 2
@@ -20,6 +21,6 @@ def test_measure_and_reset() -> None:
 
     assert op_seq == ["H", "CX", "Measure", "Reset"]
     assert op_metaparams_seq == [(0,), (0, 1), (0, 0), (1,)]
-    assert param_inds_seq == [(), (), {"prng_keys" : 0}, {"prng_keys" : 1}]
+    assert param_inds_seq == [(), (), {"prng_keys": 0}, {"prng_keys": 1}]
     assert n_qubits == n_qb
     assert n_bits == n_b

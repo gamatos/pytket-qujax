@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, Any
+from typing import Union, Any, Tuple
+import jax
 from jax import numpy as jnp, jit, grad, random
 import qujax  # type: ignore
 import pytest
 
-from pytket.circuit import Circuit, Qubit
+from pytket.circuit import Circuit, Qubit, PauliExpBox, CircBox
 from pytket.pauli import Pauli, QubitPauliString
 from pytket.utils import QubitPauliOperator
 from pytket.extensions.qujax import (
@@ -189,13 +190,10 @@ def test_CX_Barrier_Rx() -> None:
     _test_circuit(circuit, param)
 
 
-def test_circuit1() -> None:
-    n_qubits = 4
-    depth = 1
-
-    param = random.uniform(random.PRNGKey(0), (n_qubits * (depth + 1),)) * 2
-
+def get_circuit1(n_qubits : int, depth : int, param_seed : int) -> Tuple[Circuit, jax.Array]:
     circuit = Circuit(n_qubits)
+
+    param = random.uniform(random.PRNGKey(param_seed), (n_qubits * (depth + 1),)) * 2
 
     k = 0
     for i in range(n_qubits):
@@ -212,16 +210,22 @@ def test_circuit1() -> None:
             circuit.Ry(float(param[k]), i)
             k += 1
 
+    return circuit, param
+
+
+def test_circuit1() -> None:
+    n_qubits = 4
+    depth = 1
+
+    circuit,param = get_circuit1(n_qubits, depth, 0)
+
     _test_circuit(circuit, param)
 
 
-def test_circuit2() -> None:
-    n_qubits = 3
-    depth = 1
-
-    param = random.uniform(random.PRNGKey(0), (2 * n_qubits * (depth + 1),)) * 2
-
+def get_circuit2(n_qubits : int, depth : int, param_seed : int) -> Tuple[Circuit, jax.Array]:
     circuit = Circuit(n_qubits)
+
+    param = random.uniform(random.PRNGKey(param_seed), (2 * n_qubits * (depth + 1),)) * 2
 
     k = 0
     for i in range(n_qubits):
@@ -243,6 +247,13 @@ def test_circuit2() -> None:
         for i in range(n_qubits):
             circuit.Rx(float(param[k]), i)
             k += 1
+
+    return circuit, param
+
+def test_circuit2() -> None:
+    n_qubits = 3
+    depth = 1
+    circuit, param = get_circuit2(n_qubits, depth, 0)
 
     _test_circuit(circuit, param)
 
@@ -268,6 +279,35 @@ def test_measure_error() -> None:
 
     with pytest.raises(TypeError):
         _ = tk_to_qujax(circuit)
+
+
+def test_pauli_exp_box() -> None:
+    circuit = Circuit(3, 0)
+
+    box = PauliExpBox([Pauli.X, Pauli.Y, Pauli.Z], 0.22)
+
+    circuit.add_pauliexpbox(box, [0,1,2])
+
+    _test_circuit(circuit, None)
+
+
+def test_circ_box() -> None:
+    circbox_qubits = 3
+    extra_qubits = 1
+    total_qubits = circbox_qubits + extra_qubits
+    depth = 1
+
+    circuit = Circuit(total_qubits, 0)
+
+    circuit_1, param_1 = get_circuit1(circbox_qubits, depth, 0)
+    circuit_2, param_2 = get_circuit2(circbox_qubits, depth, 1)
+
+    param = jnp.concat([param_1, param_2])
+
+    circuit.add_circbox(CircBox(circuit_1), list(range(circbox_qubits)))
+    circuit.add_circbox(CircBox(circuit_2), list(range(extra_qubits,total_qubits)))
+
+    _test_circuit(circuit, param)
 
 
 def test_quantum_hamiltonian() -> None:

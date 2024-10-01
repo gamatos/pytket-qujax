@@ -20,8 +20,12 @@ from typing import Tuple, Sequence, Optional, List, Union, Callable, Any
 from functools import wraps
 
 import qujax  # type: ignore
+import jax
 from jax import numpy as jnp
+from jax.typing import ArrayLike
 from sympy import lambdify, Symbol
+import pytket
+import pytket.circuit
 from pytket import Qubit, Circuit  # type: ignore
 from pytket._tket.circuit import Command
 
@@ -162,37 +166,81 @@ def tk_to_qujax_args(circuit: Circuit, symbol_map: Optional[dict] = None) -> Tup
     qubit_inds_seq = []
     param_inds_seq = []
     param_index = 0
-    for c in circuit.get_commands():
-        gate_name = c.op.type.name
-        if gate_name == "Barrier":
-            continue
-        if gate_name == "Measure":
-            raise TypeError(
-                "Measurements not supported in qujax. \n"
-                "qujax produces statetensor corresponding "
-                "to all qubits."
-            )
 
-        if symbol_map:
-            gate, param_inds = _symbolic_command_to_gate_and_param_inds(c, symbol_map)
+    for c in circuit.get_commands():
+        op_name = c.op.type.name
+        if op_name == "Barrier":
+            continue
+        elif op_name == "Measure":
+            print(f"Found measurement {c}")
+            # raise TypeError(
+            #     "Measurements not supported in qujax. \n"
+            #     "qujax produces statetensor corresponding "
+            #     "to all qubits."
+            # )
+        elif type(c.op) is pytket.circuit.CircBox:
+            sub_circuit = c.op.get_circuit()
+            sub_gate_name_seq, sub_qubit_inds_seq, sub_param_inds_seq, _ = (
+                tk_to_qujax_args(sub_circuit, symbol_map)
+            )
+            gate_name_seq += sub_gate_name_seq
+            # Map subcircuit qubits to circuit qubits
+            qubit_map = {k:v for k, v in zip(_tk_qubits_to_inds(sub_circuit.qubits), _tk_qubits_to_inds(c.qubits))}
+            qubit_inds_seq += list(map(lambda x: tuple(qubit_map[a] for a in x), sub_qubit_inds_seq))
+            # Map subparameters to circuit parameters 
+            shifted_sub_param_inds_seq = list(map(lambda x: tuple(a + param_index for a in x), sub_param_inds_seq))
+            # Add circuit parameters to parameter count
+            max_sub_param_ind = max(map(lambda x : max(x) if len(x) > 0 else 0, sub_param_inds_seq))
+            param_index += max_sub_param_ind + 1
+            param_inds_seq += shifted_sub_param_inds_seq
         else:
-            if gate_name not in qujax.gates.__dict__:
+            param_inds = tuple()
+            if op_name == "Reset":
+                print(f"Found reset {c}")
+                gate = [
+                    jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+                    jnp.array([[0.0, 1.0], [0.0, 0.0]]),
+                ]
+                # raise TypeError(
+                #     "Measurements not supported in qujax. \n"
+                #     "qujax produces statetensor corresponding "
+                #     "to all qubits."
+                # )
+                param_inds=(tuple(), tuple())
+            elif type(c.op) is pytket.circuit.PauliExpBox:
+                paulis = c.op.get_paulis()
+                tensor = jnp.ones(1)
+                for p in paulis:
+                    m = qujax.gates.__dict__[p.name]
+                    tensor = jnp.kron(tensor, m)
+                identity = jnp.diag(jnp.ones(tensor.shape[0]))
+
+                a = -1 / 2 * jnp.pi * c.op.get_phase()
+                gate = jnp.cos(a) * identity + 1j*jnp.sin(a) * tensor
+                gate = gate.reshape((2,)*2*len(c.qubits))
+
+            elif symbol_map:
+                gate, param_inds = _symbolic_command_to_gate_and_param_inds(
+                    c, symbol_map
+                )
+            elif op_name not in qujax.gates.__dict__:
                 raise TypeError(
-                    f"{gate_name} gate not found in qujax.gates. \n pytket-qujax "
+                    f"{op_name} gate not found in qujax.gates. \n pytket-qujax "
                     "can automatically convert arbitrary non-parameterised gates "
                     "when specified in a symbolic circuit and absent from the "
                     "symbol_map argument.\n Arbitrary parameterised gates can be "
                     "added to a local qujax.gates installation and/or submitted "
                     "via pull request."
                 )
-            gate = gate_name
-            n_params = len(c.op.params)
-            param_inds = tuple(range(param_index, param_index + n_params))
-            param_index += n_params
+            else:
+                gate = op_name
+                n_params = len(c.op.params)
+                param_inds = tuple(range(param_index, param_index + n_params))
+                param_index += n_params
 
-        gate_name_seq.append(gate)
-        qubit_inds_seq.append(_tk_qubits_to_inds(c.qubits))
-        param_inds_seq.append(param_inds)
+            gate_name_seq.append(gate)
+            qubit_inds_seq.append(_tk_qubits_to_inds(c.qubits))
+            param_inds_seq.append(param_inds)
 
     return gate_name_seq, qubit_inds_seq, param_inds_seq, circuit.n_qubits
 
@@ -273,12 +321,19 @@ def tk_to_param(circuit: Circuit) -> jnp.ndarray:
         gate_name = comm.op.type.name
         if gate_name == "Barrier":
             continue
+        if type(comm.op) == pytket.circuit.CircBox:
+            param = jnp.append(param, tk_to_param(comm.op.get_circuit()))
+            continue
+        if type(comm.op) == pytket.circuit.PauliExpBox:
+            # param = jnp.append(param, comm.op.get_phase())
+            continue
         if gate_name == "Measure":
-            raise TypeError(
-                "Measurements not supported in qujax. \n"
-                "qujax produces statetensor corresponding "
-                "to all qubits."
-            )
+            print("Measurement found")
+            # raise TypeError(
+            #     "Measurements not supported in qujax. \n"
+            #     "qujax produces statetensor corresponding "
+            #     "to all qubits."
+            # )
         param = jnp.append(param, jnp.array(comm.op.params))
 
     return param

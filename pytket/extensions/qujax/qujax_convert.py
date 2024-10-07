@@ -62,7 +62,7 @@ def _append_func(f: Callable, func_to_append: Callable) -> Callable:
 
 
 def _symbolic_command_to_gate_and_param_inds(
-    command: Command, symbol_map: dict
+    command: Command, symbol_map: dict, _f: Optional[Callable] = None
 ) -> Tuple[Union[str, Callable[[jnp.ndarray], jnp.ndarray]], Sequence[int]]:
     """
     Convert pytket command to qujax (gate, parameter indices) tuple.
@@ -81,8 +81,8 @@ def _symbolic_command_to_gate_and_param_inds(
     gate_str = command.op.type.name
     free_symbols = list(command.op.free_symbols())
 
-    if gate_str in qujax.gates.__dict__:
-        qujax_gate = getattr(qujax.gates, gate_str)
+    if gate_str in qujax.gates.__dict__ or _f is not None:
+        qujax_gate = getattr(qujax.gates, gate_str) if _f is None else _f
         if callable(qujax_gate):
             gate_params = command.op.params
             if len(free_symbols) == 0:

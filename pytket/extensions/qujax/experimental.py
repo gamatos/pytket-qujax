@@ -1,4 +1,16 @@
-from typing import Tuple, Sequence, Optional, List, Union, Callable, Any, Literal
+from typing import (
+    Tuple,
+    Sequence,
+    Optional,
+    List,
+    Union,
+    Callable,
+    Any,
+    Literal,
+    Mapping,
+)
+
+from copy import copy
 
 import sympy
 
@@ -9,9 +21,9 @@ import qujax  # type: ignore
 import pytket
 import pytket.circuit
 from pytket import Circuit  # type: ignore
+from pytket import Qubit
 
 from pytket.extensions.qujax.qujax_convert import (
-    _tk_qubits_to_inds,
     _symbolic_command_to_gate_and_param_inds,
 )
 
@@ -21,8 +33,10 @@ def try_get_repeat_identifier(name: str | None) -> Tuple[str, int] | Tuple[None,
         s = name.split("_")
         if len(s) == 2:
             identifier, nr = s
-            if nr.isdigit():
+            try:
                 return identifier, int(nr)
+            except Exception:
+                pass
     return (None, None)
 
 
@@ -36,8 +50,9 @@ def tk_to_qujax_args(
     Sequence[Sequence[int]],
     int,
     int,
-    Sequence[float],
+    Mapping[str, Any],
     int,
+    Mapping[pytket.Qubit, int],
 ]:
     """
     Converts a pytket circuit into a tuple of arguments representing
@@ -90,8 +105,13 @@ def tk_to_qujax_args(
     rng_param_index = 0
     params = {"gate_parameters": [], "repeating_parameters": {}}
     previous_op = None
+    cur_op = None
+    pytket_to_qujax_qubit_map = {q: i for i, q in enumerate(circuit.qubits)}
 
     for c in circuit.get_commands():
+        previous_op = cur_op
+        cur_op = c.op
+
         op_name = c.op.type.name
         if op_name == "Barrier":
             continue
@@ -105,7 +125,12 @@ def tk_to_qujax_args(
                 sub_n_bits,
                 sub_params,
                 sub_rng_param_index,
-            ) = tk_to_qujax_args(sub_circuit, symbol_map)
+                sub_pytket_to_qujax_qubit_map,
+            ) = tk_to_qujax_args(sub_circuit, symbol_map, simulator)
+
+            sub_qujax_to_pytket_qubit_map = {
+                v: k for k, v in sub_pytket_to_qujax_qubit_map.items()
+            }
 
             # Check if previous operation was a CircBox with a repeating pattern
             previous_circuit_name = (
@@ -118,6 +143,7 @@ def tk_to_qujax_args(
             )
 
             starting_repeats = False
+            continuing_repeats = False
             # Check if current operation is a CircBox with a repeating pattern
             repeat_identifier, repeat_nr = try_get_repeat_identifier(c.op.circuit_name)
             if repeat_identifier is not None:
@@ -131,55 +157,94 @@ def tk_to_qujax_args(
                         if repeat_identifier == previous_circuit_repeat_identifier:
                             # In dict and continuing
                             if previous_circuit_repeat_nr + 1 == repeat_nr:
-                                params["repeating_parameters"][
-                                    repeat_identifier
-                                ].append(sub_params)
-                                continue
-                    # In dict but not continuing
-                    raise ValueError()
+                                continuing_repeats = True
                 else:  # does not exist in dict
-                    params["repeating_parameters"][repeat_identifier] = [sub_params]
                     starting_repeats = True
 
             # Map subcircuit qubits to circuit qubits
             # IMPORTANT TODO: filter metaparams that are qubits from ones that are not!
-            qubit_map = {
-                k: v
-                for k, v in zip(
-                    _tk_qubits_to_inds(sub_circuit.qubits), _tk_qubits_to_inds(c.qubits)
-                )
-            }
-            op_metaparams_seq_to_append = list(
-                map(lambda x: tuple(qubit_map[a] for a in x), sub_op_metaparams_seq)
-            )
+            circbox_qubit_map = {k: v for k, v in zip(sub_circuit.qubits, c.qubits)}
+
+            def _remap_qubits(q):
+                if not isinstance(q, int):
+                    return q
+                return pytket_to_qujax_qubit_map[
+                    circbox_qubit_map[sub_qujax_to_pytket_qubit_map[q]]
+                ]
+            
+            def _recursive_remap_qubits(op, mp):
+                mp = copy(mp)
+                for i, (n, p) in enumerate(zip(op, mp)):
+                    if n == "RepeatingSubcircuit":
+                        _recursive_remap_qubits(p[0], p[1])
+                    else:
+                        mp[i] = jax.tree.map(
+                        _remap_qubits, p
+                    )
+                return mp
+                        
+            op_metaparams_seq_to_append = _recursive_remap_qubits(sub_op_seq, sub_op_metaparams_seq)
 
             if symbol_map is not None:
                 param_inds_seq_to_append = sub_param_inds_seq
             else:
+
+                def _remap_param_inds(i):
+                    if not isinstance(i, int):
+                        return i
+                    return i + param_index
+
                 # Map subparameters to circuit parameters
-                shifted_sub_param_inds_seq = list(
-                    map(lambda x: tuple(a + param_index for a in x), sub_param_inds_seq)
+                shifted_sub_param_inds_seq = jax.tree.map(
+                    _remap_param_inds, sub_param_inds_seq
                 )
+
                 # Add circuit parameters to parameter count
-                max_sub_param_ind = max(
-                    map(lambda x: max(x) if len(x) > 0 else 0, sub_param_inds_seq)
-                )
+                max_sub_param_ind = max(jax.tree.flatten(sub_param_inds_seq)[0])
                 param_index += max_sub_param_ind + 1
 
                 param_inds_seq_to_append = shifted_sub_param_inds_seq
 
-            if not starting_repeats:
+            if starting_repeats:
+                op_seq += ("RepeatingSubcircuit",)
+                param_inds_seq.append(
+                    [
+                        {
+                            "repeating_parameters": {
+                                repeat_identifier: param_inds_seq_to_append
+                            }
+                        }
+                    ]
+                )
+                op_metaparams_seq += [
+                    (
+                        sub_op_seq,
+                        op_metaparams_seq_to_append,
+                        [
+                            {
+                                "repeating_parameters": {
+                                    repeat_identifier: param_inds_seq_to_append # this is the "mould"
+                                }
+                            }
+                        ],
+                    )
+                ]
+                params["repeating_parameters"][repeat_identifier] = [sub_params]
+            elif continuing_repeats:
+                params["repeating_parameters"][repeat_identifier].append(sub_params)
+                param_inds_seq[-1].append(
+                    {
+                        "repeating_parameters": {
+                            repeat_identifier: param_inds_seq_to_append
+                        }
+                    }
+                )
+            else:
                 op_seq += sub_op_seq
                 param_inds_seq += param_inds_seq_to_append
                 op_metaparams_seq += op_metaparams_seq_to_append
-            else:
-                op_seq += ("RepeatingSubcircuit",)
-                param_inds_seq += (param_inds_seq_to_append,)
-                op_metaparams_seq += (
-                    sub_op_seq,
-                    op_metaparams_seq_to_append,
-                )
-            continue
+                params["gate_parameters"] += sub_params["gate_parameters"]
+                params["repeating_parameters"] |= sub_params["repeating_parameters"]
 
         elif type(c.op) is pytket.circuit.PauliExpBox:
             paulis = c.op.get_paulis()
@@ -189,6 +254,7 @@ def tk_to_qujax_args(
                 m = qujax.gates.__dict__[p.name]
                 tensor = jnp.kron(tensor, m)
             identity = jnp.diag(jnp.ones(tensor.shape[0]))
+            metaparams_seq = [pytket_to_qujax_qubit_map[q] for q in c.qubits]
 
             def _pexb(p) -> jax.Array:
                 a = -1 / 2 * jnp.pi * p
@@ -207,6 +273,9 @@ def tk_to_qujax_args(
                 param_index += 1
                 params["gate_parameters"].append(c.op.get_phase())
 
+            op_seq.append(op_name)
+            op_metaparams_seq.append(metaparams_seq)
+            param_inds_seq.append(param_inds)
         elif op_name == "Measure":
             metaparams_seq = (c.qubits[0].index[0], c.bits[0].index[0])
             if simulator == "statetensor":
@@ -214,6 +283,10 @@ def tk_to_qujax_args(
                 rng_param_index += 1
             else:
                 param_inds = {}
+
+            op_seq.append(op_name)
+            op_metaparams_seq.append(metaparams_seq)
+            param_inds_seq.append(param_inds)
         elif op_name == "Reset":
             metaparams_seq = (c.qubits[0].index[0],)
             if simulator == "statetensor":
@@ -221,6 +294,10 @@ def tk_to_qujax_args(
                 rng_param_index += 1
             else:
                 param_inds = {}
+
+            op_seq.append(op_name)
+            op_metaparams_seq.append(metaparams_seq)
+            param_inds_seq.append(param_inds)
         else:
             if symbol_map is not None:
                 op_name, param_inds = _symbolic_command_to_gate_and_param_inds(
@@ -231,7 +308,7 @@ def tk_to_qujax_args(
                     n_params = len(c.op.params)
                     params["gate_parameters"] += c.op.params
 
-                    metaparams_seq = _tk_qubits_to_inds(c.qubits)
+                    metaparams_seq = [pytket_to_qujax_qubit_map[q] for q in c.qubits]
                     param_inds = {
                         "gate_parameters": tuple(
                             range(param_index, param_index + n_params)
@@ -250,14 +327,10 @@ def tk_to_qujax_args(
                         "via pull request."
                     )
 
-        op_seq.append(op_name)
-        op_metaparams_seq.append(metaparams_seq)
-        param_inds_seq.append(param_inds)
-        previous_op = c.op
+            op_seq.append(op_name)
+            op_metaparams_seq.append(metaparams_seq)
+            param_inds_seq.append(param_inds)
 
-    params["repeating_parameters"] = {
-        k: jnp.stack(v) for k, v in params["repeating_parameters"].items()
-    }
     return (
         op_seq,
         op_metaparams_seq,
@@ -266,4 +339,5 @@ def tk_to_qujax_args(
         circuit.n_bits,
         params,
         rng_param_index,
+        pytket_to_qujax_qubit_map,
     )

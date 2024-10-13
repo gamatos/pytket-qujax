@@ -17,7 +17,7 @@ def test_measure_and_reset() -> None:
     circuit.Measure(0, 0)
     circuit.Reset(1)
 
-    op_seq, op_metaparams_seq, param_inds_seq, n_qb, n_b = tk_to_qujax_args(circuit)
+    op_seq, op_metaparams_seq, param_inds_seq, n_qb, n_b = tk_to_qujax_args(circuit, simulator="statetensor")
 
     assert op_seq == ["H", "CX", "Measure", "Reset"]
     assert op_metaparams_seq == [(0,), (0, 1), (0, 0), (1,)]

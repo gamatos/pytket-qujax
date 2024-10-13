@@ -44,6 +44,7 @@ def tk_to_qujax_args(
     circuit: Circuit,
     symbol_map: Optional[dict] = None,
     simulator: Literal["statetensor"] | Literal["densitytensor"] = "statetensor",
+    root = True
 ) -> Tuple[
     Sequence[Union[str, Callable[[jnp.ndarray], jnp.ndarray]]],
     Sequence[Sequence[int]],
@@ -126,7 +127,7 @@ def tk_to_qujax_args(
                 sub_params,
                 sub_rng_param_index,
                 sub_pytket_to_qujax_qubit_map,
-            ) = tk_to_qujax_args(sub_circuit, symbol_map, simulator)
+            ) = tk_to_qujax_args(sub_circuit, symbol_map, simulator, root = False)
 
             sub_qujax_to_pytket_qubit_map = {
                 v: k for k, v in sub_pytket_to_qujax_qubit_map.items()
@@ -171,24 +172,23 @@ def tk_to_qujax_args(
                 return pytket_to_qujax_qubit_map[
                     circbox_qubit_map[sub_qujax_to_pytket_qubit_map[q]]
                 ]
-            
+
             def _recursive_remap_qubits(op, mp):
                 mp = copy(mp)
                 for i, (n, p) in enumerate(zip(op, mp)):
                     if n == "RepeatingSubcircuit":
                         _recursive_remap_qubits(p[0], p[1])
                     else:
-                        mp[i] = jax.tree.map(
-                        _remap_qubits, p
-                    )
+                        mp[i] = jax.tree.map(_remap_qubits, p)
                 return mp
-                        
-            op_metaparams_seq_to_append = _recursive_remap_qubits(sub_op_seq, sub_op_metaparams_seq)
+
+            op_metaparams_seq_to_append = _recursive_remap_qubits(
+                sub_op_seq, sub_op_metaparams_seq
+            )
 
             if symbol_map is not None:
                 param_inds_seq_to_append = sub_param_inds_seq
             else:
-
                 def _remap_param_inds(i):
                     if not isinstance(i, int):
                         return i
@@ -200,51 +200,31 @@ def tk_to_qujax_args(
                 )
 
                 # Add circuit parameters to parameter count
-                max_sub_param_ind = max(jax.tree.flatten(sub_param_inds_seq)[0])
-                param_index += max_sub_param_ind + 1
+                max_sub_param_ind = max([x for x in jax.tree.flatten(sub_param_inds_seq)[0] if isinstance(x, int)] + [-1])
 
                 param_inds_seq_to_append = shifted_sub_param_inds_seq
 
             if starting_repeats:
                 op_seq += ("RepeatingSubcircuit",)
-                param_inds_seq.append(
-                    [
-                        {
-                            "repeating_parameters": {
-                                repeat_identifier: param_inds_seq_to_append
-                            }
-                        }
-                    ]
-                )
+                param_inds_seq.append({"repeating_parameters": repeat_identifier})
                 op_metaparams_seq += [
                     (
                         sub_op_seq,
                         op_metaparams_seq_to_append,
-                        [
-                            {
-                                "repeating_parameters": {
-                                    repeat_identifier: param_inds_seq_to_append # this is the "mould"
-                                }
-                            }
-                        ],
+                        sub_param_inds_seq,
                     )
                 ]
                 params["repeating_parameters"][repeat_identifier] = [sub_params]
             elif continuing_repeats:
                 params["repeating_parameters"][repeat_identifier].append(sub_params)
-                param_inds_seq[-1].append(
-                    {
-                        "repeating_parameters": {
-                            repeat_identifier: param_inds_seq_to_append
-                        }
-                    }
-                )
+                # TODO: check that param_inds_seq_to_append matches previous specifications
             else:
                 op_seq += sub_op_seq
                 param_inds_seq += param_inds_seq_to_append
                 op_metaparams_seq += op_metaparams_seq_to_append
                 params["gate_parameters"] += sub_params["gate_parameters"]
                 params["repeating_parameters"] |= sub_params["repeating_parameters"]
+                param_index += max_sub_param_ind + 1
 
         elif type(c.op) is pytket.circuit.PauliExpBox:
             paulis = c.op.get_paulis()
@@ -293,7 +273,7 @@ def tk_to_qujax_args(
                 param_inds = {"measurement_prng_keys": rng_param_index}
                 rng_param_index += 1
             else:
-                param_inds = {}
+                param_inds = []
 
             op_seq.append(op_name)
             op_metaparams_seq.append(metaparams_seq)
@@ -331,6 +311,12 @@ def tk_to_qujax_args(
             op_metaparams_seq.append(metaparams_seq)
             param_inds_seq.append(param_inds)
 
+    def _is_leaf(l):
+        return isinstance(l, jax.Array) or isinstance(l, list) and all(isinstance(x, float) for x in l)
+    
+    if root:
+        params = jax.tree.map(jnp.array, params, is_leaf=_is_leaf)
+    
     return (
         op_seq,
         op_metaparams_seq,

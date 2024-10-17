@@ -108,6 +108,7 @@ def tk_to_qujax_args(
     previous_op = None
     cur_op = None
     pytket_to_qujax_qubit_map = {q: i for i, q in enumerate(circuit.qubits)}
+    pytket_to_qujax_bit_map = {b: i for i, b in enumerate(circuit.bits)}
 
     for c in circuit.get_commands():
         previous_op = cur_op
@@ -271,7 +272,7 @@ def tk_to_qujax_args(
             op_metaparams_seq.append(metaparams_seq)
             param_inds_seq.append(param_inds)
         elif op_name == "Reset":
-            metaparams_seq = [c.qubits[0].index[0]]
+            metaparams_seq = [pytket_to_qujax_qubit_map[q] for q in c.qubits]
             if simulator == "statetensor":
                 param_inds = {"measurement_prng_keys": rng_param_index}
                 rng_param_index += 1

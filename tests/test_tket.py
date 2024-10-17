@@ -17,7 +17,7 @@ from jax import numpy as jnp, jit, grad, random
 import qujax  # type: ignore
 import pytest
 
-from pytket.circuit import Circuit, Qubit
+from pytket.circuit import Circuit, Qubit, PauliExpBox
 from pytket.pauli import Pauli, QubitPauliString
 from pytket.utils import QubitPauliOperator
 from pytket.extensions.qujax import (
@@ -299,3 +299,32 @@ def test_quantum_hamiltonian() -> None:
     jax_exp = st_to_exp(state.reshape((2,) * n_qubits))
 
     assert jnp.abs(tket_exp - jax_exp) < 1e-5
+
+
+def test_pauli_exp_box() -> None:
+    circuit = Circuit(3, 0)
+
+    box = PauliExpBox([Pauli.X, Pauli.Y, Pauli.Z], 0.22)
+
+    circuit.add_pauliexpbox(box, [0, 1, 2])
+
+    _test_circuit(circuit, None)
+
+
+def test_circ_box() -> None:
+    circbox_qubits = 3
+    extra_qubits = 1
+    total_qubits = circbox_qubits + extra_qubits
+    depth = 1
+
+    circuit = Circuit(total_qubits, 0)
+
+    circuit_1, param_1 = get_circuit1(circbox_qubits, depth, 0)
+    circuit_2, param_2 = get_circuit2(circbox_qubits, depth, 1)
+
+    param = jnp.concat([param_1, param_2])
+
+    circuit.add_circbox(CircBox(circuit_1), list(range(circbox_qubits)))
+    circuit.add_circbox(CircBox(circuit_2), list(range(extra_qubits, total_qubits)))
+
+    _test_circuit(circuit, param)

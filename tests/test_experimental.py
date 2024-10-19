@@ -168,7 +168,21 @@ def test_pauli_exp_box() -> None:
 
     box = PauliExpBox([Pauli.X, Pauli.Y, Pauli.Z], 0.22)
 
+    _test_circuit_experimental(circuit)
+
+def test_multiple_pauli_exp_box() -> None:
+    circuit = Circuit(3, 0)
+
+    box = PauliExpBox([Pauli.X, Pauli.Y, Pauli.Z], 0.22)
     circuit.add_pauliexpbox(box, [0, 1, 2])
+    box = PauliExpBox([Pauli.X, Pauli.X], 0.11)
+    circuit.add_pauliexpbox(box, [0, 1])
+    box = PauliExpBox([Pauli.X, Pauli.X], 0.33)
+    circuit.add_pauliexpbox(box, [1, 2])
+    box = PauliExpBox([Pauli.Z], 0.22)
+    circuit.add_pauliexpbox(box, [0])
+    box = PauliExpBox([Pauli.Z], 0.44)
+    circuit.add_pauliexpbox(box, [2])
 
     _test_circuit_experimental(circuit)
 
@@ -188,6 +202,32 @@ def test_circ_box() -> None:
 
     circuit.add_circbox(CircBox(circuit_1), list(range(circbox_qubits)))
     circuit.add_circbox(CircBox(circuit_2), list(range(extra_qubits, total_qubits)))
+
+    _test_circuit_experimental(circuit)
+
+def test_nested_circ_box() -> None:
+    circbox_qubits = 3
+    extra_qubits = 1
+    total_qubits = circbox_qubits + extra_qubits
+    depth = 1
+
+    circuit = Circuit(total_qubits, 0)
+
+    circuit_1, param_1 = get_circuit1(circbox_qubits, depth, 0)
+    circuit_2, param_2 = get_circuit2(circbox_qubits, depth, 1)
+
+    param = jnp.concat([param_1, param_2])
+
+    sub_circuit = Circuit(total_qubits, 0)
+    sub_circuit.name = "a_0"
+
+    sub_circuit.add_circbox(CircBox(circuit_1), list(range(circbox_qubits)))
+    sub_circuit.add_circbox(CircBox(circuit_2), list(range(extra_qubits, total_qubits)))
+    circuit.add_circbox(CircBox(sub_circuit), list(range(total_qubits)))
+
+    sub_circuit_1 = sub_circuit.copy()
+    sub_circuit_1.name = "a_1"
+    circuit.add_circbox(CircBox(sub_circuit_1), list(range(total_qubits)))
 
     _test_circuit_experimental(circuit)
 

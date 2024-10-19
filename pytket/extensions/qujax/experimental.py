@@ -27,6 +27,15 @@ from pytket.extensions.qujax.qujax_convert import (
     _symbolic_command_to_gate_and_param_inds,
 )
 
+def _get_pexb(tensor, d):
+    identity = jnp.diag(jnp.ones(tensor.shape[0]))
+    def _pexb(p) -> jax.Array:
+        a = -1 / 2 * jnp.pi * p
+        gate = jnp.cos(a) * identity + 1j * jnp.sin(a) * tensor
+        gate = gate.reshape((2,) * 2 * d)
+        return gate
+    return _pexb
+
 
 def try_get_repeat_identifier(name: str | None) -> Tuple[str, int] | Tuple[None, None]:
     if isinstance(name, str) and len(name) > 0:
@@ -236,15 +245,10 @@ def tk_to_qujax_args(
             # Build tensor product of Pauli matrices
             for p in paulis:
                 m = qujax.gates.__dict__[p.name]
-                tensor = jnp.kron(tensor, m)
-            identity = jnp.diag(jnp.ones(tensor.shape[0]))
+                tensor = jnp.kron(tensor, m)            
             metaparams_seq = [pytket_to_qujax_qubit_map[q] for q in c.qubits]
 
-            def _pexb(p) -> jax.Array:
-                a = -1 / 2 * jnp.pi * p
-                gate = jnp.cos(a) * identity + 1j * jnp.sin(a) * tensor
-                gate = gate.reshape((2,) * 2 * len(c.qubits))
-                return gate
+            _pexb = _get_pexb(tensor, len(metaparams_seq))
 
             if symbol_map is not None:
                 op_name, _param_inds = _symbolic_command_to_gate_and_param_inds(

@@ -167,8 +167,10 @@ def test_pauli_exp_box() -> None:
     circuit = Circuit(3, 0)
 
     box = PauliExpBox([Pauli.X, Pauli.Y, Pauli.Z], 0.22)
+    circuit.add_pauliexpbox(box, [0,1,2])
 
     _test_circuit_experimental(circuit)
+
 
 def test_multiple_pauli_exp_box() -> None:
     circuit = Circuit(3, 0)
@@ -204,6 +206,7 @@ def test_circ_box() -> None:
     circuit.add_circbox(CircBox(circuit_2), list(range(extra_qubits, total_qubits)))
 
     _test_circuit_experimental(circuit)
+
 
 def test_nested_circ_box() -> None:
     circbox_qubits = 3
@@ -482,14 +485,20 @@ def test_subcircuit_dt() -> None:
         subcircuit_2.Ry(params[1], subqubits[1])
         subcircuit_2.XXPhase(params[2], subqubits[0], subqubits[1])
         wrappingsubsubcircuit = Circuit()
-        wrappingsubsys = wrappingsubsubcircuit.add_q_register("wrappingsubsys", n_qubits - 1)
+        wrappingsubsys = wrappingsubsubcircuit.add_q_register(
+            "wrappingsubsys", n_qubits - 1
+        )
         wrappingsubsys_qubits = wrappingsubsys.to_list()
         wrappingsubsubcircuit.name = "d"
         for i in range(subsubcircuit_repeats):
             sc = get_subsubcircuit(np.random.rand(3))
             sc.name = f"c_{i}"
-            wrappingsubsubcircuit.add_circbox(CircBox(sc), [wrappingsubsys_qubits[0], wrappingsubsys_qubits[1]])
-        subcircuit_2.add_circbox(CircBox(wrappingsubsubcircuit), [subqubits[0], subqubits[1]])
+            wrappingsubsubcircuit.add_circbox(
+                CircBox(sc), [wrappingsubsys_qubits[0], wrappingsubsys_qubits[1]]
+            )
+        subcircuit_2.add_circbox(
+            CircBox(wrappingsubsubcircuit), [subqubits[0], subqubits[1]]
+        )
         return subcircuit_2
 
     circuit.X(qubits[1])

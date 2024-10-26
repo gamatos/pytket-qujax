@@ -27,15 +27,6 @@ from pytket.extensions.qujax.qujax_convert import (
     _symbolic_command_to_gate_and_param_inds,
 )
 
-def _get_pexb(tensor, d):
-    identity = jnp.diag(jnp.ones(tensor.shape[0]))
-    def _pexb(p) -> jax.Array:
-        a = -1 / 2 * jnp.pi * p
-        gate = jnp.cos(a) * identity + 1j * jnp.sin(a) * tensor
-        gate = gate.reshape((2,) * 2 * d)
-        return gate
-    return _pexb
-
 
 def try_get_repeat_identifier(name: str | None) -> Tuple[str, int] | Tuple[None, None]:
     if isinstance(name, str) and len(name) > 0:
@@ -240,23 +231,18 @@ def tk_to_qujax_args(
                 param_index += max_sub_param_ind + 1
 
         elif type(c.op) is pytket.circuit.PauliExpBox:
-            paulis = c.op.get_paulis()
-            tensor = jnp.ones(1)
-            # Build tensor product of Pauli matrices
-            for p in paulis:
-                m = qujax.gates.__dict__[p.name]
-                tensor = jnp.kron(tensor, m)            
-            metaparams_seq = [pytket_to_qujax_qubit_map[q] for q in c.qubits]
-
-            _pexb = _get_pexb(tensor, len(metaparams_seq))
+            metaparams_seq = [
+                [p.name for p in c.op.get_paulis()],
+                [pytket_to_qujax_qubit_map[q] for q in c.qubits],
+            ]
 
             if symbol_map is not None:
                 op_name, _param_inds = _symbolic_command_to_gate_and_param_inds(
-                    c, symbol_map, _pexb
+                    c, symbol_map
                 )
                 param_inds = {"gate_parameters": _param_inds}
             else:
-                op_name = _pexb
+                op_name = "PauliExpBox"
                 param_inds = {"gate_parameters": param_index}
                 param_index += 1
                 params["gate_parameters"].append(c.op.get_phase())
